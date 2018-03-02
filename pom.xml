@@ -9,7 +9,7 @@
     <groupId>com.sparkjava</groupId>
     <artifactId>spark-core</artifactId>
     <packaging>bundle</packaging>
-    <version>2.4-SNAPSHOT</version>
+    <version>3.0.0-SNAPSHOT</version>
     <name>Spark</name>
     <description>A Sinatra inspired java web framework</description>
     <url>http://www.sparkjava.com</url>
@@ -30,9 +30,9 @@
 
     <properties>
         <java.version>1.8</java.version>
-        <jetty.version>9.3.6.v20151106</jetty.version>
+        <jetty.version>9.4.6.v20170531</jetty.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <powermock.version>1.6.4</powermock.version>
+        <powermock.version>1.6.6</powermock.version>
         <mockito.version>1.10.19</mockito.version>
     </properties>
 

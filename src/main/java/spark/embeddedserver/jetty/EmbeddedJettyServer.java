@@ -22,7 +22,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.CountDownLatch;
 
 import org.eclipse.jetty.server.Connector;
 import org.eclipse.jetty.server.Handler;
@@ -30,12 +29,14 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.handler.HandlerList;
 import org.eclipse.jetty.servlet.ServletContextHandler;
+import org.eclipse.jetty.util.thread.ThreadPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import spark.ssl.SslStores;
 import spark.embeddedserver.EmbeddedServer;
+import spark.embeddedserver.jetty.websocket.WebSocketHandlerWrapper;
 import spark.embeddedserver.jetty.websocket.WebSocketServletContextHandlerFactory;
+import spark.ssl.SslStores;
 
 /**
  * Spark server implementation
@@ -45,23 +46,26 @@ import spark.embeddedserver.jetty.websocket.WebSocketServletContextHandlerFactor
 public class EmbeddedJettyServer implements EmbeddedServer {
 
     private static final int SPARK_DEFAULT_PORT = 4567;
-    private static final int SPARK_DEFAULT_SSL_PORT = 4568;
     private static final String NAME = "Spark";
 
-    private Handler handler;
+    private final JettyServerFactory serverFactory;
+    private final Handler handler;
     private Server server;
 
     private final Logger logger = LoggerFactory.getLogger(this.getClass());
 
-    private Map<String, Class<?>> webSocketHandlers;
+    private Map<String, WebSocketHandlerWrapper> webSocketHandlers;
     private Optional<Integer> webSocketIdleTimeoutMillis;
 
-    public EmbeddedJettyServer(Handler handler) {
+    private ThreadPool threadPool = null;
+
+    public EmbeddedJettyServer(JettyServerFactory serverFactory, Handler handler) {
+        this.serverFactory = serverFactory;
         this.handler = handler;
     }
 
     @Override
-    public void configureWebSockets(Map<String, Class<?>> webSocketHandlers,
+    public void configureWebSockets(Map<String, WebSocketHandlerWrapper> webSocketHandlers,
                                     Optional<Integer> webSocketIdleTimeoutMillis) {
 
         this.webSocketHandlers = webSocketHandlers;
@@ -72,19 +76,16 @@ public class EmbeddedJettyServer implements EmbeddedServer {
      * {@inheritDoc}
      */
     @Override
-    public void ignite(String host,
-                       int port,
-                       SslStores sslStores,
-                       CountDownLatch latch,
-                       int maxThreads,
-                       int minThreads,
-                       int threadIdleTimeoutMillis) {
 
-        ignite(host, port, -1, sslStores, latch, maxThreads, minThreads, threadIdleTimeoutMillis);
-    }
+    public int ignite(String host,
+                      int port,
+                      SslStores sslStores,
+                      int maxThreads,
+                      int minThreads,
+                      int threadIdleTimeoutMillis) throws Exception {
 
-    @Override
-    public void ignite(String host, int port, int sslPort, SslStores sslStores, CountDownLatch latch, int maxThreads, int minThreads, int threadIdleTimeoutMillis) {
+        boolean hasCustomizedConnectors = false;
+
         if (port == 0) {
             try (ServerSocket s = new ServerSocket(0)) {
                 port = s.getLocalPort();
@@ -94,41 +95,32 @@ public class EmbeddedJettyServer implements EmbeddedServer {
             }
         }
 
-        if (sslPort == 0) {
-            try (ServerSocket s = new ServerSocket(0)) {
-                sslPort = s.getLocalPort();
-            } catch (IOException e) {
-                logger.error("Could not get first available port (port set to 0), using default: {}", SPARK_DEFAULT_SSL_PORT);
-                sslPort = SPARK_DEFAULT_SSL_PORT;
-            }
+        // Create instance of jetty server with either default or supplied queued thread pool
+        if(threadPool == null) {
+            server = serverFactory.create(maxThreads, minThreads, threadIdleTimeoutMillis);
+        } else {
+            server = serverFactory.create(threadPool);
         }
 
-        server = JettyServer.create(maxThreads, minThreads, threadIdleTimeoutMillis);
-
         ServerConnector connector;
-        ServerConnector additionalConnector = null;
 
         if (sslStores == null) {
             connector = SocketConnectorFactory.createSocketConnector(server, host, port);
         } else {
-            connector = SocketConnectorFactory.createSecureSocketConnector(server, host, sslPort != -1 ? sslPort : port, sslStores);
-            if (sslPort != -1) {
-                additionalConnector = SocketConnectorFactory.createSocketConnector(server, host, port);
-            }
+            connector = SocketConnectorFactory.createSecureSocketConnector(server, host, port, sslStores);
         }
 
+        Connector previousConnectors[] = server.getConnectors();
         server = connector.getServer();
-        Connector[] connectors;
-        if (additionalConnector != null) {
-            connectors = new Connector[]{connector, additionalConnector};
+        if (previousConnectors.length != 0) {
+            server.setConnectors(previousConnectors);
+            hasCustomizedConnectors = true;
         } else {
-            connectors = new Connector[]{connector};
+            server.setConnectors(new Connector[] {connector});
         }
-
-        server.setConnectors(connectors);
 
         ServletContextHandler webSocketServletContextHandler =
-                WebSocketServletContextHandlerFactory.create(webSocketHandlers, webSocketIdleTimeoutMillis);
+            WebSocketServletContextHandlerFactory.create(webSocketHandlers, webSocketIdleTimeoutMillis);
 
         // Handle web socket routes
         if (webSocketServletContextHandler == null) {
@@ -147,20 +139,23 @@ public class EmbeddedJettyServer implements EmbeddedServer {
             server.setHandler(handlers);
         }
 
-        try {
-            logger.info("== {} has ignited ...", NAME);
+        logger.info("== {} has ignited ...", NAME);
+        if (hasCustomizedConnectors) {
+            logger.info(">> Listening on Custom Server ports!");
+        } else {
             logger.info(">> Listening on {}:{}", host, port);
-            if (sslPort != -1) {
-                logger.info(">> Listening on {}:{}", host, sslPort);
-            }
-
-            server.start();
-            latch.countDown();
-            server.join();
-        } catch (Exception e) {
-            logger.error("ignite failed", e);
-            System.exit(100); // NOSONAR
         }
+
+        server.start();
+        return port;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void join() throws InterruptedException {
+        server.join();
     }
 
     /**
@@ -180,5 +175,22 @@ public class EmbeddedJettyServer implements EmbeddedServer {
         logger.info("done");
     }
 
+    @Override
+    public int activeThreadCount() {
+        if (server == null) {
+            return 0;
+        }
+        return server.getThreadPool().getThreads() - server.getThreadPool().getIdleThreads();
+    }
 
+    /**
+     * Sets optional thread pool for jetty server.  This is useful for overriding the default thread pool
+     * behaviour for example io.dropwizard.metrics.jetty9.InstrumentedQueuedThreadPool.
+     * @param threadPool thread pool
+     * @return Builder pattern - returns this instance
+     */
+    public EmbeddedJettyServer withThreadPool(ThreadPool threadPool) {
+        this.threadPool = threadPool;
+        return this;
+    }
 }

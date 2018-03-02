@@ -11,6 +11,8 @@ import java.util.*;
 
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class RequestTest {
@@ -41,6 +43,24 @@ public class RequestTest {
 
         String name = request.queryParams("name");
         assertEquals("Invalid name in query string", "Federico", name);
+    }
+
+    @Test
+    public void queryParamOrDefault_shouldReturnQueryParam_whenQueryParamExists() {
+
+        when(servletRequest.getParameter("name")).thenReturn("Federico");
+
+        String name = request.queryParamOrDefault("name", "David");
+        assertEquals("Invalid name in query string", "Federico", name);
+    }
+
+    @Test
+    public void queryParamOrDefault_shouldReturnDefault_whenQueryParamIsNull() {
+
+        when(servletRequest.getParameter("name")).thenReturn(null);
+
+        String name = request.queryParamOrDefault("name", "David");
+        assertEquals("Invalid name in default value", "David", name);
     }
 
     @Test
@@ -100,6 +120,51 @@ public class RequestTest {
         assertEquals("A Session should not have been created because create parameter was set to false",
                 null, request.session(false));
 
+    }
+
+    @Test
+    public void testSessionNpParams_afterSessionInvalidate() {
+        when(servletRequest.getSession()).thenReturn(httpSession);
+
+        Session session = request.session();
+        session.invalidate();
+        request.session();
+
+        verify(servletRequest, times(2)).getSession();
+    }
+
+    @Test
+    public void testSession_whenCreateIsTrue_afterSessionInvalidate() {
+        when(servletRequest.getSession(true)).thenReturn(httpSession);
+
+        Session session = request.session(true);
+        session.invalidate();
+        request.session(true);
+
+        verify(servletRequest, times(2)).getSession(true);
+    }
+
+    @Test
+    public void testSession_whenCreateIsFalse_afterSessionInvalidate() {
+        when(servletRequest.getSession()).thenReturn(httpSession);
+        when(servletRequest.getSession(false)).thenReturn(null);
+
+        Session session = request.session();
+        session.invalidate();
+        request.session(false);
+
+        verify(servletRequest, times(1)).getSession(false);
+    }
+
+    @Test
+    public void testSession_2times() {
+        when(servletRequest.getSession(true)).thenReturn(httpSession);
+
+        Session session = request.session(true);
+        session = request.session(true);
+
+        assertNotNull(session);
+        verify(servletRequest, times(1)).getSession(true);
     }
 
     @Test
